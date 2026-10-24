@@ -1,0 +1,81 @@
+name: Build APK
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Organizar arquivos (funciona mesmo se foram enviados soltos, sem pastas)
+        run: |
+          set -e
+          if [ ! -f app/build.gradle ]; then
+            echo "Arquivos soltos detectados: montando a estrutura do projeto..."
+            APP=""
+            for f in build*.gradle; do
+              if [ -f "$f" ] && grep -q "namespace" "$f"; then APP="$f"; fi
+            done
+            if [ -z "$APP" ]; then echo "ERRO: nao achei o build.gradle do app (o que contem 'namespace')"; exit 1; fi
+            R=app/src/main/res
+            mkdir -p app/src/main/java/com/jarvis/cameras "$R/values" "$R/drawable" "$R/mipmap-anydpi-v26"
+            cp "$APP" /tmp/app.gradle
+            cp /tmp/app.gradle app/build.gradle
+            printf "plugins {\n    id 'com.android.application' version '8.5.2' apply false\n    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false\n}\n" > build.gradle
+            cp AndroidManifest.xml app/src/main/AndroidManifest.xml
+            cp MainActivity.kt app/src/main/java/com/jarvis/cameras/MainActivity.kt
+            cp colors.xml strings.xml themes.xml "$R/values/"
+            cp ic_launcher_foreground.xml "$R/drawable/"
+            cp ic_launcher.xml "$R/mipmap-anydpi-v26/"
+            if [ -f banner.png ]; then
+              cp banner.png "$R/drawable/banner.png"
+            else
+              echo "banner.png nao encontrado: usando banner simples"
+              printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#02060D"/></shape>\n' > "$R/drawable/banner.xml"
+            fi
+          fi
+          echo "Estrutura final:"
+          find app -type f | sort
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Compilar APK (debug - garantido)
+        run: gradle assembleDebug --no-daemon
+
+      - name: Compilar APK (release otimizado - menor e mais fluido)
+        continue-on-error: true
+        run: gradle assembleRelease --no-daemon
+
+      - name: Reunir APKs
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/JARVIS-debug.apk
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk out/JARVIS.apk
+          else
+            echo "AVISO: o release otimizado falhou; use o JARVIS-debug.apk"
+          fi
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-apk
+          path: out/*.apk
+
+      - name: Publicar em Releases (quando criar uma tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.apk
